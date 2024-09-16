@@ -15,7 +15,7 @@ from machine import Pin,Timer,UART,DAC,ADC
 
 import aiorepl
 
-from utime import sleep_ms, sleep
+from utime import sleep_us, sleep_ms, sleep
 import pindefs_dc_controller_esp32 as pindefs
 import dc_controller_defs as defs
 import throttle
@@ -61,16 +61,25 @@ class dc_controller_mymodule():
         
     # This calculates the overall throttle level based on the pot setting bemf measurement and selected mode    
     def calculate_throttle(self, mode, requested_speed, bemf_speed):
-        output_level=0
-        if (mode == defs.MODE_DIRECT):
-            output_level = requested_speed
-        elif (mode == defs.MODE_TRIANGLE):
-            if ((requested_speed>=defs.FORTY_PERCENT_THROTTLE)or(bemf_speed>defs.MIN_BEMF_LEVEL)):
+        # By default or if mode is direct, output = input
+        # (level matching TBA)
+        output_level=requested_speed
+        if (mode == defs.MODE_TRIANGLE):
+            # This to be revisited later:-
+            # Martin Da Costa ignores 40 percent limit
+            # but applies feedback in inverse proportion to requested speed instead
+            if ((requested_speed>=defs.FORTY_PERCENT_THROTTLE)or(bemf_speed>defs.MAX_BEMF_LEVEL)):
                 previous_bemf=bemf_speed
             else:
-                error_level = requested_speed*_inp_scale-(previous_bemf+bemf_speed)*defs.ERROR_SCALE
+                error_level = (int((requested_speed*defs.INP_SCALE-(previous_bemf+bemf_speed))*defs.ERROR_SCALE)/defs.ERROR_DIV)
                 if(error_level<0):
+                    pass
+                elif((requested_speed + error_level)>defs.MAX_OP_LEVEL):
+                    output_level = defs.MAX_OP_LEVEL
+                elif((requested_speed + error_level)>0):
+                    output_level = requested_speed + error_level
                     output_level=requested_speed
+            previous_bemf=bemf_speed
         return(output_level)
 
 
@@ -81,18 +90,18 @@ class dc_controller_mymodule():
         # instantiate pins
         t0dac = DAC(pindefs.PIN_DAC0)
         t1dac = DAC(pindefs.PIN_DAC1)
-        bemf0adc = ADC(pindefs.PIN_BEMF0)
-        bemf1adc = ADC(pindefs.PIN_BEMF1)
-        self._potadc = ADC(pindefs.PIN_POT)
+        bemf0adc = ADC(pindefs.PIN_BEMF0,atten=ADC.ATTN_11DB)
+        bemf1adc = ADC(pindefs.PIN_BEMF1,atten=ADC.ATTN_11DB)
+        self._potadc = ADC(pindefs.PIN_POT,atten=ADC.ATTN_11DB)
         blnk0pin = Pin(pindefs.PIN_BLNK0)
         blnk1pin = Pin(pindefs.PIN_BLNK1)
-        dirpin = Pin(pindefs.PIN_DIR)
+        self._dirpin = Pin(pindefs.PIN_DIR)
         
         # Instantiate throttles, using instantiated pins, one for each output
         self.throttle0 = throttle.throttle(t0dac, bemf0adc, blnk0pin)
         self.throttle1 = throttle.throttle(t1dac, bemf1adc, blnk1pin)        
         
-        direction = dirpin.value()
+        direction = self._dirpin.value()
         self.set_throttle(direction)
         self.last_direction = direction
         self._timer_synchronisation=asyncio.ThreadSafeFlag()
@@ -110,7 +119,7 @@ class dc_controller_mymodule():
             start_level=0 # exact value of start_level is TBD
             # only act on direction switch when requested_level is below minimum threshold
             if (requested_level<defs.MIN_REQUESTED_LEVEL):
-                direction = dirpin.value()
+                direction = self._dirpin.value()
             else:
                 direction = self.last_direction
             blanking_enabled = False

@@ -7,12 +7,17 @@
 #
 
 #Phase values
-MAX_PHASE=const(1024)
-    
-POT_PHASE=const(32)
-BLANK_PHASE=const(896)
-BEMF_PHASE=const(960)
-LAST_PHASE=const(MAX_PHASE-1)                
+#MAX_PHASE=const(1024)
+#POT_PHASE=const(32)
+#BLANK_PHASE=const(896)
+#BEMF_PHASE=const(960)
+#LAST_PHASE=const(MAX_PHASE-1)                
+
+MAX_PHASE=const(16)
+POT_PHASE=const(3)
+BLANK_PHASE=const(13)
+BEMF_PHASE=const(14)
+LAST_PHASE=const(MAX_PHASE-1)
 
 # These are to be set up...
 #pot_scale= x
@@ -24,8 +29,11 @@ MIN_REQUESTED_LEVEL= const(10)
 MAX_THROTTLE_LEVEL=const(256)
 FORTY_PERCENT_THROTTLE=int(MAX_THROTTLE_LEVEL*40/100)
 MAX_OP_LEVEL=const(256)
-MIN_BEMF_LEVEL=const(10)
+MAX_BEMF_LEVEL=const(250)
 ERROR_SCALE=const(8)
+ERROR_DIV=const(16)
+INP_SCALE=const(1) #Equivalent of 8 used for Ardiono. Divide by 2 for ADC reference 2.45V,
+#and a further 4 for input range (12 bits, not 10)
 
 # Modes
 MODE_DIRECT=const(0)
