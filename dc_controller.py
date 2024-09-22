@@ -9,6 +9,8 @@
 #
 # (c) Ian Blair 6th. Sept 2024
 #
+# For license and attributions see associated readme file
+#
 
 import uasyncio as asyncio
 from machine import Pin,Timer,UART,DAC,ADC
@@ -45,7 +47,7 @@ class dc_controller_mymodule():
             self.output_throttle = self.throttle1
             self.return_throttle = self.throttle0
     # delete stored bemf_level
-        last_bemf=0
+        self.last_bemf=0
         
     # Filter calculates instantaneous output value based on mode, phase, and start_level
     def filter_calc(self, mode, phase, throttle_level, start_level):
@@ -54,9 +56,16 @@ class dc_controller_mymodule():
             return_value = input_level
         elif ((mode == defs.MODE_TRIANGLE) or mode == (defs.MODE_TRIANGLE_BEMF)):
             if (phase < switching_phase):
-                return_value = min(start_level + int(phase/defs.MAX_PHASE),defs.MAX_OP_LEVEL)
+                return_value = min(start_level + int((phase*defs.MAX_OP_LEVEL)/defs.MAX_PHASE),defs.MAX_OP_LEVEL)
             else:
-                return_value = min(start_level + int((phase-switching_phase)/defs.MAX_PHASE), defs.MAX_OP_LEVEL)
+                height = int((switching_phase*defs.MAX_OP_LEVEL)/defs.MAX_PHASE)
+                return_value = min(start_level + height + int(((switching_phase-phase)*defs.MAX_OP_LEVEL)/defs.MAX_PHASE), defs.MAX_OP_LEVEL)
+        # Limit output to range of DAC
+        if (return_value < 0):
+            return_value = 0
+        if (return_value > defs.MAX_OP_LEVEL):
+            return_value = defs.MAX_OP_LEVEL
+            
         return(return_value)
         
     # This calculates the overall throttle level based on the pot setting bemf measurement and selected mode    
@@ -69,9 +78,9 @@ class dc_controller_mymodule():
             # Martin Da Costa ignores 40 percent limit
             # but applies feedback in inverse proportion to requested speed instead
             if ((requested_speed>=defs.FORTY_PERCENT_THROTTLE)or(bemf_speed>defs.MAX_BEMF_LEVEL)):
-                previous_bemf=bemf_speed
+                self.last_bemf=bemf_speed
             else:
-                error_level = (int((requested_speed*defs.INP_SCALE-(previous_bemf+bemf_speed))*defs.ERROR_SCALE)/defs.ERROR_DIV)
+                error_level = (int((requested_speed*defs.INP_SCALE-(self.last_bemf+bemf_speed))*defs.ERROR_SCALE)/defs.ERROR_DIV)
                 if(error_level<0):
                     pass
                 elif((requested_speed + error_level)>defs.MAX_OP_LEVEL):
@@ -79,7 +88,7 @@ class dc_controller_mymodule():
                 elif((requested_speed + error_level)>0):
                     output_level = requested_speed + error_level
                     output_level=requested_speed
-            previous_bemf=bemf_speed
+            self.last_bemf=bemf_speed
         return(output_level)
 
 
@@ -93,9 +102,9 @@ class dc_controller_mymodule():
         bemf0adc = ADC(pindefs.PIN_BEMF0,atten=ADC.ATTN_11DB)
         bemf1adc = ADC(pindefs.PIN_BEMF1,atten=ADC.ATTN_11DB)
         self._potadc = ADC(pindefs.PIN_POT,atten=ADC.ATTN_11DB)
-        blnk0pin = Pin(pindefs.PIN_BLNK0)
-        blnk1pin = Pin(pindefs.PIN_BLNK1)
-        self._dirpin = Pin(pindefs.PIN_DIR)
+        blnk0pin = Pin(pindefs.PIN_BLNK0, Pin.OUT)
+        blnk1pin = Pin(pindefs.PIN_BLNK1, Pin.OUT)
+        self._dirpin = Pin(pindefs.PIN_DIR, Pin.IN, Pin.PULL_UP)
         
         # Instantiate throttles, using instantiated pins, one for each output
         self.throttle0 = throttle.throttle(t0dac, bemf0adc, blnk0pin)
@@ -112,11 +121,13 @@ class dc_controller_mymodule():
     # *** Throttles coro
     async def throttles_coro(self) -> None:
 #        self.logger.log('throttles_coro start')
-
+        self.output_throttle.clear_blanking()
+        self.return_throttle.clear_blanking()
+        # default these to zero until assigned further down...
+        throttle_value=0
+        requested_level=0
+        
         while True:
-            requested_level = self._potadc.read_u16()
-            throttle_value=0
-            start_level=0 # exact value of start_level is TBD
             # only act on direction switch when requested_level is below minimum threshold
             if (requested_level<defs.MIN_REQUESTED_LEVEL):
                 direction = self._dirpin.value()
@@ -132,35 +143,43 @@ class dc_controller_mymodule():
                     
                     await self._timer_synchronisation.wait()
                     # Perform required actions on particular phases
-                    if (phase == defs.POT_PHASE):
+                    # Start all cycles with blanking off on both throttles
+                    if (phase == 0):
+                       self.output_throttle.clear_blanking()
+                       
+                    elif (phase == defs.POT_PHASE):
                         requested_level = self._potadc.read_u16()
+                        #requested_level = 1000
                         
                     elif (phase == defs.BLANK_PHASE):
                        self.output_throttle.set_blanking()
                        blanking_enabled = True
-
-                    elif (phase == defs.BEMF_PHASE):
-                        if (blanking_enabled):
-                           bemf_level= self.output_throttle.read_bemf()
-                           blanking_enabled = False
                        
                     # At end of each cycle recalculate throttle values
                     elif (phase == defs.LAST_PHASE):
-                        self.output_throttle.clear_blanking()
+                        if (blanking_enabled):
+                           bemf_level= self.output_throttle.read_bemf()
+                           #bemf_level= 0
+                           blanking_enabled = False
                         throttle_value = self.calculate_throttle(defs.MODE_TRIANGLE,requested_level,bemf_level)
                 
                     
-                    # Regardless of above actions set output value according top hase
+                    # Regardless of above actions set output value
                     # Note that output will only be seen when blanking is not enabled.
-                    output_value=self.filter_calc(defs.MODE_TRIANGLE,phase,throttle_value,start_level)
-                    self.output_throttle.write_output(output_value)
+                    #output_value=self.filter_calc(defs.MODE_TRIANGLE,phase,3000,0)
+                    output_sample=self.filter_calc(defs.MODE_TRIANGLE,phase,throttle_value,0)
+                    self.output_throttle.write_output(output_sample)
+                    #self.output_throttle.write_output(phase)
                     # Then wait for next loop
                     # For testing - for normal operation replaced by separate async task
                     #await asyncio.sleep_us(100)
             else:
                 # Otherwise reverse direction
                 self.last_direction = direction                
-                set_throttle(direction)                
+                set_throttle(direction)
+                # Reset blanking
+                self.output_throttle.clear_blanking()
+                self.return_throttle.clear_blanking() 
 
     # *** user module application task - like Arduino loop()
     async def module_main_loop_coro(self) -> None:

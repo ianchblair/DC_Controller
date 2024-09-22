@@ -5,6 +5,8 @@
 #
 # (c) Ian Blair 3rd. April 2024
 #
+# For license and attributions see associated readme file
+#
 
 #Phase values
 #MAX_PHASE=const(1024)
@@ -15,8 +17,7 @@
 
 MAX_PHASE=const(16)
 POT_PHASE=const(3)
-BLANK_PHASE=const(13)
-BEMF_PHASE=const(14)
+BLANK_PHASE=const(14)
 LAST_PHASE=const(MAX_PHASE-1)
 
 # These are to be set up...
