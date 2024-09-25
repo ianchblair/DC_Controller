@@ -27,13 +27,12 @@ LAST_PHASE=const(MAX_PHASE-1)
 
 # Levels and scale factors
 MIN_REQUESTED_LEVEL= const(10)
-MAX_THROTTLE_LEVEL=const(4096)
+MAX_THROTTLE_LEVEL=const(4095)
 FORTY_PERCENT_THROTTLE=int(MAX_THROTTLE_LEVEL*40/100)
-MAX_OP_LEVEL=const(256)
-MAX_BEMF_LEVEL=const(250)
+MAX_OP_LEVEL=const(255)
+MAX_BEMF_LEVEL=const(1000)
 ERROR_SCALE=const(8)
-ERROR_DIV=const(16)
-INP_SCALE=const(1) #Equivalent of 8 used for Ardiono. Divide by 2 for ADC reference 2.45V,
+INP_SCALE=const(8) #Equivalent of 8 used for Ardiono. Divide by 2 for ADC reference 2.45V,
 #and a further 4 for input range (12 bits, not 10)
 
 # Modes
