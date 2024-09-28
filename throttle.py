@@ -23,7 +23,7 @@ class throttle:
             
     # Controller routines
     def adc_read(self,adc_instance):
-        _adc_value = adc_instance.read_u16()
+        _adc_value = adc_instance.read()
         return(_adc_value)
         
     def dac_write(self,dac_value,dac_instance):

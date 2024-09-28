@@ -163,7 +163,7 @@ class dc_controller_mymodule():
                        self.output_throttle.clear_blanking()
                        
                     elif (phase == defs.POT_PHASE):
-                        requested_level = self._potadc.read_u16()
+                        requested_level = self._potadc.read()
                         
                     elif (phase == defs.BLANK_PHASE):
                        self.output_throttle.set_blanking()
