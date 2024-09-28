@@ -7,7 +7,7 @@ Based on work for Arduino by Martin Da Costa and John Purbrick (MERG)
 
 CBUS Interface is incomplete, but is based on the CBUS Micropython library
 of Duncan Greenwood (MERG)
-For MERG see MERG.org.uk
+For MERG see http://MERG.org.uk
 
 License:
   This work is licensed under the:
