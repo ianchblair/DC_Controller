@@ -9,6 +9,8 @@
 #
 # (c) Ian Blair 3rd. April 2024
 #
+# For license and attributions see associated readme file
+#
 
 import uasyncio as asyncio
 from machine import Pin,Timer,UART,DAC,ADC
@@ -20,8 +22,10 @@ import cbusdefs
 import cbusmodule
 import mcp2515
 
-from utime import sleep_ms, sleep
-import pindefs_DC_Controller_ESP32 as pindefs
+import aiorepl
+
+from utime import sleep_us, sleep_ms, sleep
+import pindefs_dc_controller_esp32 as pindefs
 import dc_controller_defs as defs
 import throttle
 import logger
@@ -53,39 +57,61 @@ class dc_controller_mymodule(cbusmodule.cbusmodule):
     # delete stored bemf_level
         last_bemf=0
         
-    # Filter calculates instantaneous output value based on mode, phase, and start_level
-    def filter_calc(self, mode, phase, throttle_level, start_level):
+    # Filter calculates instantaneous output value based on mode, and phase
+    def filter_calc(self, mode, phase, throttle_level):
+        # Offset the DC according to the throttle vale
+        dc_offset=int(throttle_level*defs.MAX_OP_LEVEL/defs.MAX_THROTTLE_LEVEL)
         switching_phase = int(throttle_level*defs.MAX_PHASE/defs.MAX_THROTTLE_LEVEL)
         if (mode == defs.MODE_DIRECT):
-            return_value = input_level
+            return_value = dc_offset
         elif ((mode == defs.MODE_TRIANGLE) or mode == (defs.MODE_TRIANGLE_BEMF)):
             if (phase < switching_phase):
-                return_value = min(start_level + int(phase/defs.MAX_PHASE),defs.MAX_OP_LEVEL)
+                triangle_value = min(int((phase*defs.MAX_OP_LEVEL)/defs.MAX_PHASE),defs.MAX_OP_LEVEL)
             else:
-                return_value = min(start_level + int((phase-switching_phase)/defs.MAX_PHASE), defs.MAX_OP_LEVEL)
+                height = int((switching_phase*defs.MAX_OP_LEVEL)/defs.MAX_PHASE)
+                triangle_value = min(height + int(((switching_phase-phase)*defs.MAX_OP_LEVEL)/defs.MAX_PHASE), defs.MAX_OP_LEVEL)
+            if (triangle_value < 0):
+                triangle_value = 0
+            # Only use triangle wave for outputs below 50%
+            if (dc_offset<defs.MAX_OP_LEVEL/2):    
+                return_value = int(triangle_value*(defs.MAX_OP_LEVEL-(2*dc_offset))/defs.MAX_OP_LEVEL) + dc_offset
+            else:
+                return_value = dc_offset
+
+        # Extra check to imit output to range of DAC, where offset puts it out of range
+        if (return_value < 0):
+            return_value = 0
+        if (return_value > defs.MAX_OP_LEVEL):
+            return_value = defs.MAX_OP_LEVEL
+            
         return(return_value)
         
     # This calculates the overall throttle level based on the pot setting bemf measurement and selected mode    
     def calculate_throttle(self, mode, requested_speed, bemf_speed):
         # By default or if mode is direct, output = input
+        # Input levels arefrom ADCs, 0..4095 range
         # (level matching TBA)
         output_level=requested_speed
-        if (mode == defs.MODE_TRIANGLE):
-            # This to be revisited later:-
-            # Martin Da Costa ignores 40 percent limit
-            # but applies feedback in inverse proportion to requested speed instead
-            if ((requested_speed>=defs.FORTY_PERCENT_THROTTLE)or(bemf_speed>defs.MAX_BEMF_LEVEL)):
-                previous_bemf=bemf_speed
-            else:
-                error_level = (int((requested_speed*defs.INP_SCALE-(previous_bemf+bemf_speed))*defs.ERROR_SCALE)/defs.ERROR_DIV)
-                if(error_level<0):
-                    pass
-                elif((requested_speed + error_level)>defs.MAX_OP_LEVEL):
-                    output_level = defs.MAX_OP_LEVEL
-                elif((requested_speed + error_level)>0):
-                    output_level = requested_speed + error_level
+        if ((mode == defs.MODE_TRIANGLE) and (bemf_speed < defs.MAX_BEMF_LEVEL)):
+            ## This to be revisited later:-
+            ## Martin Da Costa ignores 40 percent limit
+            ## but applies feedback in inverse proportion to requested speed instead
+            ##if ((requested_speed>=defs.FORTY_PERCENT_THROTTLE)or(bemf_speed>defs.MAX_BEMF_LEVEL)):
+            ##    self.last_bemf=bemf_speed
+            ##else:
+            error_correction = ((self.last_bemf+bemf_speed)*defs.ERROR_SCALE)
+            error_level = requested_speed-error_correction
+            scaled_error_level = int(error_level*(defs.MAX_THROTTLE_LEVEL-requested_speed)/defs.MAX_THROTTLE_LEVEL)
+            if(error_level>=0):
+                if((requested_speed + scaled_error_level)>defs.MAX_THROTTLE_LEVEL):
+                    output_level = defs.MAX_THROTTLE_LEVEL
+                elif((requested_speed + scaled_error_level)>0):
+                    output_level = requested_speed + scaled_error_level
+                else:
                     output_level=requested_speed
-            previous_bemf=bemf_speed
+        # save bemf measuremant for next cycle
+        self.last_bemf=bemf_speed
+        # return calculated throttle value
         return(output_level)
 
     def initialise(self):
@@ -149,9 +175,10 @@ class dc_controller_mymodule(cbusmodule.cbusmodule):
         bemf0adc = ADC(pindefs.PIN_BEMF0,atten=ADC.ATTN_11DB)
         bemf1adc = ADC(pindefs.PIN_BEMF1,atten=ADC.ATTN_11DB)
         self._potadc = ADC(pindefs.PIN_POT,atten=ADC.ATTN_11DB)
-        blnk0pin = Pin(pindefs.PIN_BLNK0)
-        blnk1pin = Pin(pindefs.PIN_BLNK1)
-        self._dirpin = Pin(pindefs.PIN_DIR)
+        blnk0pin = Pin(pindefs.PIN_BLNK0, Pin.OUT)
+        blnk1pin = Pin(pindefs.PIN_BLNK1, Pin.OUT)
+        self._dirpin = Pin(pindefs.PIN_DIR, Pin.IN, Pin.PULL_UP)
+
         
         # Instantiate throttles, using instantiated pins, one for each output
         self.throttle0 = throttle.throttle(t0dac, bemf0adc, blnk0pin)
@@ -185,39 +212,48 @@ class dc_controller_mymodule(cbusmodule.cbusmodule):
                 
                 # Main waveform loop
                 # Performs various actions according to phase value
-                for phase in range(defs.MAX_PHASE):
+               for phase in range(defs.MAX_PHASE):
                     
                     await self._timer_synchronisation.wait()
                     # Perform required actions on particular phases
-                    if (phase == defs.POT_PHASE):
-                        requested_level = self._potadc.read_u16()
+                    # Start all cycles with blanking off on both throttles
+                    if (phase == 0):
+                       self.output_throttle.clear_blanking()
+                       
+                    elif (phase == defs.POT_PHASE):
+                        requested_level = self._potadc.read()
                         
                     elif (phase == defs.BLANK_PHASE):
                        self.output_throttle.set_blanking()
                        blanking_enabled = True
-
-                    elif (phase == defs.BEMF_PHASE):
-                        if (blanking_enabled):
-                           bemf_level= self.output_throttle.read_bemf()
-                           blanking_enabled = False
                        
                     # At end of each cycle recalculate throttle values
                     elif (phase == defs.LAST_PHASE):
-                        self.output_throttle.clear_blanking()
+                        if (blanking_enabled):
+                           bemf_level= self.output_throttle.read_bemf()
+                           #bemf_level= 0
+                           blanking_enabled = False
                         throttle_value = self.calculate_throttle(defs.MODE_TRIANGLE,requested_level,bemf_level)
+                        #throttle_value=requested_level
                 
                     
-                    # Regardless of above actions set output value according top hase
+                    # Regardless of above actions set output value
                     # Note that output will only be seen when blanking is not enabled.
-                    output_value=self.filter_calc(defs.MODE_TRIANGLE,phase,throttle_value,start_level)
-                    self.output_throttle.write_output(output_value)
+                    #output_sample=self.filter_calc(defs.MODE_TRIANGLE,phase,1000)
+                    output_sample=self.filter_calc(defs.MODE_TRIANGLE,phase,throttle_value)
+                    self.output_throttle.write_output(output_sample)
+                    #self.output_throttle.write_output(requested_level)
                     # Then wait for next loop
                     # For testing - for normal operation replaced by separate async task
                     #await asyncio.sleep_us(100)
             else:
                 # Otherwise reverse direction
                 self.last_direction = direction                
-                set_throttle(direction)                
+                self.set_throttle(direction)
+                # Reset blanking
+                self.output_throttle.clear_blanking()
+                self.return_throttle.clear_blanking() 
+    
                 
 
      # *** user module application task - like Arduino loop()
