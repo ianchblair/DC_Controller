@@ -43,5 +43,7 @@ License:
    
 
  Outstanding software issues:-
+ 
     Pipelining in MicroPython implementation is making 1ms delays take 2 to 3 ms, so the code is running slower than intended. This to be addressed.
+    
     CBUS messaging and CAN protocol required for module_dc_controller (i.e. CBUS controlled version) has not yet been implemented.
