@@ -36,7 +36,7 @@ class throttle:
         self._blanking.value(1)
     
     def read_bemf(self):
-        return(self._adc_bemf_instance.read_u16())
+        return(self._adc_bemf_instance.read())
         
     def write_output(self,output_level):
         self._dac_instance.write(output_level)
